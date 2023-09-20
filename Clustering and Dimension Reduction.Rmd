@@ -1,0 +1,768 @@
+---
+title: "Analytics project module 4 and 5"
+author: "Michael Francis Sy"
+output:
+  html_document:
+    df_print: paged
+---
+
+
+# Loading Packages and data
+
+```{r, results = 'hide', warning= FALSE, message= FALSE}
+#for PCA
+library(readxl)
+library(here)
+library(magrittr)
+library(kableExtra)
+library(stringr)
+library(ggplot2)
+library(dplyr)
+library(ggrepel)
+library(reshape)
+
+#for Clustering
+library("tidyverse")
+library("cluster")
+library("NbClust")
+library("fpc")
+library("fastcluster")
+library("mclust")
+library("factoextra")
+
+library('Rtsne')
+library('plotly')
+
+raw.data <- read_excel("TOPIC 2 - Development Indicators World Bank Data.xlsx","DATA")
+raw.info <- read_excel("TOPIC 2 - Development Indicators World Bank Data.xlsx","DICTIONARY")
+clean.info <- na.omit(raw.info)
+info <- clean.info[1:23,]
+info %>% kbl(caption="About World Bank Dataset ",
+      booktabs = T,
+   align = "lll") %>%
+  kable_styling(bootstrap_options = "hover",
+                latex_options = "hold_position",
+                html_font = "helvetica",
+                position = "center",
+                full_width = T) %>%
+    footnote(general = raw.info[27:27,2],
+             general_title = "Source of Data: ",
+             alphabet = raw.info[26:26,2],
+             alphabet_title = "note:",
+           footnote_as_chunk = T,
+           threeparttable = TRUE,
+           title_format = c("italic","bold")
+           )
+
+```
+
+# Exploratory Data Analysis
+
+```{r}
+head(raw.data)
+```
+
+
+
+
+
+```{r, warning=FALSE}
+summary <- data.frame(unclass(summary(raw.data)), check.names = FALSE, stringsAsFactors = FALSE)
+vars <- sapply(raw.data, var)
+summary <- rbind(summary,variance=str_c("Var:",round(vars,2)))
+summary
+```
+
+
+```{r, warning = F}
+bins = log(nrow(raw.data),2)+5 #by sturges rule (modified)
+for (i in 3:23){
+p <- ggplot(data = raw.data)+
+  geom_histogram(mapping = aes(x = pull(raw.data,i)), bins = bins)+
+  xlab(colnames(raw.data)[i])+
+  ylab("COUNT")
+print(p)
+}
+```
+
+**REMOVAL OF VARIABLES**
+
+```{R}
+raw.data <- dplyr::select(raw.data, -c("ADULT_LITERACY","LITERACY_RATE","DEATH_BY_NONCOMM"))
+```
+
+
+
+Possible Outlier
+
+```{r}
+raw.data[raw.data$GDP_LEVEL>1.0e13,]
+```
+
+```{r}
+raw.data[raw.data$GDP_PER_CAPITA_GROWTH>10,]
+```
+
+Timor Leste has the highest "GPD_PER_CAPITA_GROWTH" perhaps because of its low population
+
+
+```{r}
+raw.data[raw.data$GOVT_EXP_HEALTH>9000,]
+```
+
+
+```{r}
+data <- raw.data[,-c(1,2)] #removing Name and Code
+```
+
+
+```{r}
+prcomp1 <- prcomp(x = data, retx = T, center = T, scale. = T)
+```
+
+```{r}
+prcomp1$rotation %>%
+  round(digits = 4) %>% # rounding off to 4 decimal places
+  as_tibble(rownames = "variables") %>% kbl %>%
+  kable_styling(bootstrap_options = "hover",
+                latex_options = "hold_position",
+                html_font = "helvetica",
+                position = "center",
+                full_width = T)
+```
+### CORRELATION HEATMAP OF PCS
+```{r}
+cor(prcomp1$x)
+```
+
+```{r}
+summary1 <- summary(prcomp1)
+summary1
+```
+
+```{r}
+eighty <- min(summary1$importance[3,][summary1$importance[3,]>0.8])
+pc.eighty <- which(summary1$importanc[3,] == eighty)
+
+
+
+tibble(pc = 1:length(summary1$sdev), variance = (prcomp1$sdev)^2) %>%
+  ggplot(aes(x = pc, y = variance)) +
+  geom_point(col = "tomato", size = 2) +
+  geom_line(stat = "identity", col = "tomato", linetype = 2) +
+  scale_x_continuous(breaks = 1:21) +
+  theme_minimal()+
+  geom_segment(aes(x = pc.eighty, y = 2.5, xend = pc.eighty, yend = 1),
+                  arrow = arrow(length = unit(0.3, "cm")),
+               lineend = "round",
+               linejoin = "bevel",
+               size = 1.5,
+               col = 3)+
+  geom_label(aes(x=6,y=3), label = "var starts to flatten", size = 3)+
+  geom_label(aes(x=6,y=3.7), label = "80% explained variance", size = 3)
+```
+
+inspecting the cumulative proportion, scree plot and standard deviation of the principal components, it is best to use the first 5-6 PCs. And since the variance flattens starting PC6. I will use the first 5 PCs.
+
+**investigating the PCs**
+
+- **PC1**
+
+It is hard to discern the characteristic of PC1 because of high dimensionality and there is no variable that dominates the other. In fact, most of the absolute values are almost equal. To characterize, I checked which of the ff countries have the highest and lowest PC1 values.
+
+```{r}
+data.frame(COUNTRY = raw.data$NAME,
+           PC1value = summary1$x[,1]) -> PC1.analysis
+
+ggplot(data = PC1.analysis, aes(y = PC1value, x = 0,label = COUNTRY))+
+  geom_jitter(width = 0.1,
+              height = 0.1,
+              color = dplyr::case_when(PC1.analysis$PC1value > 4 ~ "#1b9e77", 
+                                      PC1.analysis$PC1value < -3.5 ~ "#d95f02",
+                                      TRUE ~ "#7570b3"))+
+  xlim(c(-1,1))+
+    geom_label_repel(data = subset(PC1.analysis, PC1value>4),
+                  box.padding   = 0.2, 
+                  point.padding = 0.5,
+                  segment.color = 'grey50',
+                  segment.size=0.5, direction="both",
+                  nudge_x = 1) +
+    geom_label_repel(data = subset(PC1.analysis, PC1value<(-3.5)),
+                  box.padding   = 0.2, 
+                  point.padding = 0.5,
+                  segment.color = 'grey50',
+                  segment.size=0.5, direction="both",
+                  nudge_x = 1) +
+  theme_classic()
+```
+
+```{r}
+raw.data[(PC1.analysis$PC1value>7 | PC1.analysis$PC1value<(-3.5)),][,-c(2)] -> PC1.extreme
+PC1.extreme[order(PC1.extreme$ELECTRICITY),]
+```
+PC1 contrasts the difference between wealthy/developed and poor/undeveloped countries in terms of access to utility, basic needs, and gap in economic growth caused by unemployment, illiteracy and medical needs.
+
+
+
+- **PC2**
+```{r}
+data.frame(COUNTRY = raw.data$NAME,
+           PC2value = summary1$x[,2]) -> PC2.analysis
+
+ggplot(data = PC2.analysis, aes(y = PC2value, x = 0,label = COUNTRY))+
+  geom_point()+
+  theme_classic()
+```
+
+```{r}
+which(raw.data$NAME == raw.data$NAME[PC2.analysis$PC2value<(-10)]) #remove which obs is skewing the data (UNITED STATES)
+```
+```{r}
+data.frame(COUNTRY = raw.data[-c(146),]$NAME,
+           PC2value = summary1$x[-c(146),2]) -> PC2.analysis2
+set.seed(1)
+sample.country.high.pc2 <- as.numeric(sample(row.names(subset(PC2.analysis2, PC2value>0.5)),5))
+ggplot(data = PC2.analysis2, aes(y = PC2value, x = 0,label = COUNTRY))+
+  geom_jitter(width = 0.1,
+              height = 0.1,
+              color = dplyr::case_when(PC2.analysis2$PC2value > 0.5 ~ "#1b9e77", 
+                                      PC2.analysis2$PC2value < -2.5 ~ "#d95f02",
+                                      TRUE ~ "#7570b3"))+
+  xlim(c(-1,1))+
+    geom_label_repel(data = PC2.analysis2[sample.country.high.pc2,],
+                  box.padding   = 0.2, 
+                  point.padding = 0.5,
+                  segment.color = 'grey50',
+                  segment.size=0.5, direction="both",
+                  nudge_x = 1) +
+    geom_label_repel(data = subset(PC2.analysis2, PC2value<(-2.5)),
+                  box.padding   = 0.2, 
+                  point.padding = 0.5,
+                  segment.color = 'grey50',
+                  segment.size=0.5, direction="both",
+                  nudge_x = 1) +
+  theme_classic()
+
+```
+```{r}
+raw.data[(PC2.analysis$PC2value>0.5 | PC2.analysis$PC2value<(-2.5)),][,-c(2)] -> PC2.extreme
+rbind(head(PC2.extreme[order(PC2.extreme$GOVT_EXP_HEALTH),c(1,5,9,15,7,12)]),
+      tail(PC2.extreme[order(PC2.extreme$GOVT_EXP_HEALTH),c(1,5,9,15,7,12)]))
+```
+PC2 is inversely proportional to GDP_LEVEL, GNI_PER_CAPITA, GOVT_EXP_HEALTH and directly proportional to UNEMPLOYMENT AND YOUTH LITERACY.
+
+PC2 can be thought of country's economy. A lower PC2 indicates a good economy, invested in health tech and having low unemployment rate. 
+
+- **PC3**
+
+PC3 is directly proportional to UNEMPLOYMENT rate, SUICIDE_MORTALITY, GOVT_EXP_EDUCATION and inversely proportional to GDP_PER_CAPITA_GROWTH
+
+
+```{r}
+data.frame(COUNTRY = raw.data$NAME,
+           PC3value = summary1$x[,3]) -> PC3.analysis
+ggplot(data = PC3.analysis, aes(y = PC3value, x = 0,label = COUNTRY))+
+  geom_jitter(width = 0.1,
+              height = 0.1,
+              color = dplyr::case_when(PC3.analysis$PC3value > 2.5 ~ "#1b9e77", 
+                                      PC3.analysis$PC3value < -2.0 ~ "#d95f02",
+                                      TRUE ~ "#7570b3"))+
+  xlim(c(-1,1))+
+    geom_label_repel(data = subset(PC3.analysis, PC3value>(2.5)),
+                  box.padding   = 0.2, 
+                  point.padding = 0.5,
+                  segment.color = 'grey50',
+                  segment.size=0.5, direction="both",
+                  nudge_x = 1) +
+    geom_label_repel(data = subset(PC3.analysis, PC3value<(-2.0)),
+                  box.padding   = 0.2, 
+                  point.padding = 0.5,
+                  segment.color = 'grey50',
+                  segment.size=0.5, direction="both",
+                  nudge_x = 1) +
+  theme_classic()
+
+```
+```{R}
+raw.data[(PC3.analysis$PC3value>2.5 | PC3.analysis$PC3value<(-2.0)),][,-c(2)] -> PC3.extreme
+tail(PC3.extreme[order(PC3.extreme$UNEMPLOYMENT),],10)
+```
+
+PC3 indicates something about the workforce or the job satisfaction of the people or perhaps PC3 can be an indicator of job-education gap or misalignment. 
+
+
+- **PC4**
+
+PC4 is inversely proportional to GDP_PER_CAPITA_GROWTH,FDI,SUICIDE_MORTALITY,IMMUN_BCG,IMMUN_MEASLES and directly proportional to UNEMPLOYMENT
+
+```{r}
+data.frame(COUNTRY = raw.data$NAME,
+           PC4value = summary1$x[,4]) -> PC4.analysis
+ggplot(data = PC4.analysis, aes(y = PC4value, x = 0,label = COUNTRY))+
+  geom_jitter(width = 0.1,
+              height = 0.1,
+              color = dplyr::case_when(PC4.analysis$PC4value > 2 ~ "#1b9e77", 
+                                      PC4.analysis$PC4value < -3 ~ "#d95f02",
+                                      TRUE ~ "#7570b3"))+
+  xlim(c(-1,1))+
+    geom_label_repel(data = subset(PC4.analysis, PC4value>(2)),
+                  box.padding   = 0.2, 
+                  point.padding = 0.5,
+                  segment.color = 'grey50',
+                  segment.size=0.5, direction="both",
+                  nudge_x = 1) +
+    geom_label_repel(data = subset(PC4.analysis, PC4value<(-3.0)),
+                  box.padding   = 0.2, 
+                  point.padding = 0.5,
+                  segment.color = 'grey50',
+                  segment.size=0.5, direction="both",
+                  nudge_x = 1) +
+  theme_classic()
+
+```
+
+```{R}
+raw.data[(PC4.analysis$PC4value>2 | PC4.analysis$PC4value<(-3.0)),][,-c(2)] -> PC4.extreme
+PC4.extreme[order(PC4.extreme$GDP_PER_CAPITA_GROWTH, decreasing = F),]
+```
+PC4 can be a contrast of small developing country and a large declining country.
+
+- **PC5**
+
+PC5 is predominantly and positively measured by FDI, followed by GNI_PER_CAPITA and ELDERLY_LITERACY and negative GOVT_EXP_EDUCATION.
+
+```{r}
+data.frame(COUNTRY = raw.data$NAME,
+           PC5value = summary1$x[,5]) -> PC5.analysis
+ggplot(data = PC5.analysis, aes(y = PC5value, x = 0,label = COUNTRY))+
+  geom_jitter(width = 0.1,
+              height = 0.1,
+              color = dplyr::case_when(PC5.analysis$PC5value > 2 ~ "#1b9e77", 
+                                      PC5.analysis$PC5value < -2 ~ "#d95f02",
+                                      TRUE ~ "#7570b3"))+
+  xlim(c(-1,1))+
+    geom_label_repel(data = subset(PC5.analysis, PC5value>(2)),
+                  box.padding   = 0.2, 
+                  point.padding = 0.5,
+                  segment.color = 'grey50',
+                  segment.size=0.5, direction="both",
+                  nudge_x = 1) +
+    geom_label_repel(data = subset(PC5.analysis, PC5value<(-2)),
+                  box.padding   = 0.2, 
+                  point.padding = 0.5,
+                  segment.color = 'grey50',
+                  segment.size=0.5, direction="both",
+                  nudge_x = 1) +
+  theme_classic()
+
+```
+
+```{R}
+raw.data[(PC5.analysis$PC5value>2 | PC5.analysis$PC5value<(-2)),][,-c(2)] -> PC5.extreme
+PC5.extreme[order(PC5.extreme$FDI, decreasing = F),]
+```
+PC5 contrasts between developed country who is expanding or outsourcing manpower and a country that prioritizes domestic investment and education.
+
+
+### Removal of Outlier
+```{r}
+data_updated <- bind_cols(raw.data, as_tibble(prcomp1$x))
+
+
+data.dim.reduc <- bind_cols(tibble(NAME = raw.data$NAME), as_tibble(prcomp1$x)[,1:5])
+#treating US as outlier
+data.dim.reduc <- data.dim.reduc[-c(which(raw.data$NAME == "United States")),]
+#treating US as outlier
+data.dim.reduc <- data.dim.reduc[-c(which(raw.data$NAME == "Timor-Leste")),]
+
+clean.data <- raw.data[-c(which(raw.data$NAME == "United States")),]
+clean.data <- clean.data[-c(which(raw.data$NAME == "Timor-Leste")),] #start here
+```
+
+
+
+
+# Connectivity-Based Clustering
+
+```{r}
+mahal <- function(x, cx = NULL) {
+  x <- as.data.frame(x)
+  if(is.null(cx)) cx <- cov(x)
+  out <- lapply(1:nrow(x), function(i) {
+    mahalanobis(x = x, 
+                center = do.call("c", x[i, ]),
+                cov = cx,
+                tol=1e-20) # needed when working with almost singular vcov matrix
+  })
+  return(as.dist(do.call("rbind", out)))
+}
+
+dist_euc <- dist(dplyr :: select(data.dim.reduc, -NAME), method = "euclidean") #euclidean is the default
+dist_man <- dist(dplyr :: select(data.dim.reduc, -NAME), method = "manhattan")
+dist_mahal <- mahal(x = dplyr :: select(data.dim.reduc, -NAME))
+```
+
+## Performing Agglomerative Nesting
+
+```{r}
+linkage <- function(distance, cut, method){
+    if (distance == "euc"){
+      sin   <- cluster::agnes(x = dist_euc, diss = T, method = "single")
+      com   <- cluster::agnes(x = dist_euc, diss = T, method = "complete")
+      avg   <- cluster::agnes(x = dist_euc, diss = T, method = "average")
+      wrd   <- cluster::agnes(x = dist_euc, diss = T, method = "ward")
+      cen   <- stats::hclust(d = dist_euc, method = "centroid")
+      med   <- fastcluster::hclust(d = dist_euc, method = "median")
+    }else if(distance == "man"){
+      sin   <- cluster::agnes(x = dist_man, diss = T, method = "single")
+      com   <- cluster::agnes(x = dist_man, diss = T, method = "complete")
+      avg   <- cluster::agnes(x = dist_man, diss = T, method = "average")
+      wrd   <- cluster::agnes(x = dist_man, diss = T, method = "ward")
+      cen   <- stats::hclust(d = dist_man, method = "centroid")
+      med   <- fastcluster::hclust(d = dist_man, method = "median")
+    }else if(distance == "mahal"){
+      sin   <- cluster::agnes(x = dist_mahal, diss = T, method = "single")
+      com   <- cluster::agnes(x = dist_mahal, diss = T, method = "complete")
+      avg   <- cluster::agnes(x = dist_mahal, diss = T, method = "average")
+      wrd   <- cluster::agnes(x = dist_mahal, diss = T, method = "ward")
+      cen   <- stats::hclust(d = dist_mahal, method = "centroid")
+      med   <- fastcluster::hclust(d = dist_mahal, method = "median")
+    }else{stop("distance = euc, man, or mahal")}
+  
+  plot(sin)
+  plot(com)
+  plot(avg)
+  plot(wrd)
+  plot(cen)
+  plot(med)
+  
+    sin.c <- cutree(tree = sin, k = cut) 
+    sin.c %>% table %>% as.vector -> sin.v
+    com.c <- cutree(tree = com, k = cut)
+    com.c %>% table %>% as.vector -> com.v
+    avg.c <- cutree(tree = avg, k = cut)
+    avg.c %>% table %>% as.vector -> avg.v
+    wrd.c <- cutree(tree = wrd, k = cut)
+    wrd.c %>% table %>% as.vector -> wrd.v
+    cen.c <- cutree(tree = cen, k = cut)
+    cen.c %>% table %>% as.vector -> cen.v
+    med.c <- cutree(tree = med, k = cut)
+    med.c %>% table %>% as.vector -> med.v
+    
+    df<-data.frame()
+    df<-rbind(sin.v,
+              com.v,
+              avg.v,
+              wrd.v,
+              cen.v,
+              med.v)
+    colnames(df) <- 1:cut
+
+    return(list(table = df,
+                single = sin.c,
+                complete = com.c,
+                average = avg.c,
+                ward = wrd.c,
+                centroid = cen.c,
+                median = med.c))
+}
+```
+
+```{r}
+mahalanobis <- linkage(distance = "mahal", cut = 5)
+mahalanobis$table
+```
+
+- Linkage via Median, centroid and single results to chaining.
+
+- we can expect that mahalanobis might wont work well since the correlation between variables is removed as result PCA.
+
+```{r}
+euclidean <- linkage(distance = "euc", cut = 5)
+euclidean$table
+```
+ward and complete linkage using euclidean distance produces well distributed cluster
+
+```{r}
+manhattan <- linkage(distance = "man", cut = 4)
+manhattan$table
+```
+the result from manhattan is comparable to euclidean but is more distributed than the former. We can use 4(man) or 5(euc).
+
+## Metrics for Internal Validation (finding no. of cluster)
+### Silhouette
+
+```{r}
+
+cluster_silhouette <- NbClust(data = dplyr::select(raw.data,-c("NAME","CODE")), diss = dist_euc, distance = NULL, method = "ward.D", min.nc = 2, max.nc = 20, index = "silhouette")
+
+plot(x = 2:20, y = cluster_silhouette$All.index)
+cluster_silhouette$Best.nc
+```
+2 no. of clusters doesnt seem right. try Calinski-harabasz index
+
+### Calinski-harabasz
+
+```{r}
+
+cluster_silhouette <- NbClust(data = dplyr::select(raw.data,-c("NAME","CODE")), diss = dist_euc, distance = NULL, method = "ward.D", min.nc = 2, max.nc = 20, index = "ch")
+
+plot(x = 2:20, y = cluster_silhouette$All.index)
+cluster_silhouette$Best.nc
+```
+
+## Visualizing Clustering from Agglomerative
+
+```{r}
+  clean.data[,-c(2)] %>%
+  mutate(cluster = manhattan$ward) -> clustered.data1
+```
+
+Rtnse
+```{r}
+agglo.clustering<- cbind(data.dim.reduc, cluster = clustered.data1$cluster)
+```
+
+```{R}
+rtnse.function <- function(per, max.iter, data){
+    worldbank_tsne <- Rtsne(X = data[,-c(1,7)], perplexity = per, max_iter = max.iter)
+    
+    data %>%
+      mutate(dim1 = worldbank_tsne$Y[,1], dim2 = worldbank_tsne$Y[,2]) -> Rtnse.data
+    
+    Rtnse.data %>%
+      ggplot(aes(x = dim1, y = dim2, label = NAME, col = as.factor(cluster)))+
+      geom_point()+
+      geom_text_repel(data = subset(Rtnse.data,
+                                     (worldbank_tsne$Y[,1]>0 & worldbank_tsne$Y[,2]>0)),
+                      box.padding   = 0.1, 
+                      point.padding = 0.2,
+                      segment.color = 'grey50',
+                      segment.size=0.2, direction="both",
+                      nudge_x = 50,
+                      nudge_y = 40,
+                      max.overlaps = 25)+
+      geom_text_repel(data = subset(Rtnse.data,
+                                     (worldbank_tsne$Y[,1]>0 & worldbank_tsne$Y[,2]<0)),
+                      box.padding   = 0.1, 
+                      point.padding = 0.2,
+                      segment.color = 'grey50',
+                      segment.size=0.2, direction="both",
+                      nudge_x = 50,
+                      nudge_y = -50,
+                      max.overlaps = 25)+
+      geom_text_repel(data = subset(Rtnse.data,
+                                     (worldbank_tsne$Y[,1]<0 & worldbank_tsne$Y[,2]<0)),
+                      box.padding   = 0.1, 
+                      point.padding = 0.2,
+                      segment.color = 'grey50',
+                      segment.size=0.2, direction="both",
+                      nudge_x = -50,
+                      nudge_y = -40,
+                      max.overlaps = 25)+
+      geom_text_repel(data = subset(Rtnse.data,
+                                     (worldbank_tsne$Y[,1]<0 & worldbank_tsne$Y[,2]>0)),
+                      box.padding   = 0.1, 
+                      point.padding = 0.2,
+                      segment.color = 'grey50',
+                      segment.size=0.2, direction="both",
+                      nudge_x = -50,
+                      nudge_y = 40,
+                      max.overlaps = 30)+
+      xlim(c(-150,150))+
+      ylim(c(-130,130))
+}
+```
+
+investigating
+
+```{r, warning = 'hide'}
+set.seed(10)
+rtnse.function(6,2000, data = agglo.clustering)
+```
+3D visualization using first 3 PCs only
+```{r}
+with(agglo.clustering, plot_ly(x=PC1, y=PC2, z=PC3, type="scatter3d", mode="markers", color=as.factor(cluster)))
+```
+
+
+```{r}
+bar.comparison <- function(data, stat){
+  overall <- data[,-c(1)] %>%
+                summarise_all(.funs = eval(parse(text=stat))) %>%
+                gather(key = "var", value = "median")
+  
+  clust_med <- data[,-c(1)] %>%
+                    group_by(cluster) %>%
+                    summarise_all(.funs = eval(parse(text=stat)))
+  for(i in 1:3){
+    clust_med %>%
+      gather((1+(1+6*(i-1))):((1+6*(i))),key = "var", value = "medC") %>%
+      inner_join(y = overall, by = "var") %>%
+      mutate(mean_diff = medC-median, tag = if_else(mean_diff < 0, "Below Avg.", "Not Below Avg.")) %>%
+      ggplot(aes(x = cluster, y = mean_diff, fill = tag)) +
+      geom_bar(stat = "identity") +
+       facet_wrap(~ var, nrow = 5, scales = "free_y") +
+      ggthemes::theme_gdocs() -> p
+    print(p)
+  }
+}
+
+bar.comparison(clustered.data1, stat = "median")
+```
+
+
+# Centroid-based Clustering
+
+```{r}
+set.seed(10101010)
+#using k=3 from silhouette
+km_random <- kmeans(x = dplyr::select(data.dim.reduc,-NAME), centers = 5, nstart = 5)
+table(km_random$cluster)
+```
+best is 5 clusters (based on dispersion)
+
+```{r}
+  clean.data[,-c(2)] %>%
+  mutate(cluster = km_random$cluster) -> clustered.data2
+```
+
+
+
+```{r}
+k.clustering.dim.reduc<- cbind(data.dim.reduc, cluster = clustered.data2$cluster)
+```
+
+Rtnse
+```{r, warning = 'hide'}
+set.seed(10)
+rtnse.function(7,1000, data = k.clustering.dim.reduc)
+```
+```{r}
+with(k.clustering.dim.reduc, plot_ly(x=PC1, y=PC2, z=PC3, type="scatter3d", mode="markers", color=as.factor(cluster)))
+```
+```{r}
+bar.comparison(clustered.data2, stat = "median")
+```
+
+# PAM AND CLARA
+
+**apply pam and clara, choose k**
+```{r}
+#mediods not specified for now
+pam.clust <- pam(x = dplyr::select(data.dim.reduc, -NAME), k = 4, metric = "euclidean", stand = T)
+clara.clust <- clara(x = dplyr::select(data.dim.reduc, -NAME), k = 4, metric = "euclidean", stand = T)
+```
+
+
+```{r}
+pam.clust$clustering %>%
+  table()
+```
+```{r}
+clara.clust$clustering %>%
+  table()
+```
+using 4 to 6 cluster does not distribute the density per cluster. Therefore, we can use k = 4 for better dispersion.
+
+**labelling raw data for PAM and CLARA**
+
+```{r}
+  clean.data[,-c(2)] %>%
+  mutate(cluster = pam.clust$clustering) -> clustered.data3
+
+  clean.data[,-c(2)] %>%
+  mutate(cluster = clara.clust$clustering) -> clustered.data4
+
+```
+
+**labeled dimension reduced for PAM and CLARA**
+```{r}
+pam.dim.reduc <- cbind(data.dim.reduc, cluster = clustered.data3$cluster)
+```
+
+```{r}
+clara.dim.reduc <- cbind(data.dim.reduc, cluster = clustered.data4$cluster)
+```
+
+**RTNSE, 3D PLOT, AND BAR PLOTS FOR PAM**
+```{r, warning = 'hide'}
+set.seed(10)
+rtnse.function(9,1000, data = pam.dim.reduc)
+```
+
+```{r}
+with(pam.dim.reduc, plot_ly(x=PC1, y=PC2, z=PC3, type="scatter3d", mode="markers", color=as.factor(cluster)))
+```
+
+```{r}
+bar.comparison(clustered.data3, stat = "median")
+```
+
+**RTNSE, 3D PLOT, AND BAR PLOTS FOR CLARA**
+```{r, warning = 'hide'}
+set.seed(10)
+rtnse.function(8,1500, data = clara.dim.reduc)
+```
+
+```{r}
+with(clara.dim.reduc, plot_ly(x=PC1, y=PC2, z=PC3, type="scatter3d", mode="markers", color=as.factor(cluster)))
+```
+
+```{r}
+bar.comparison(clustered.data4, stat = "median")
+```
+
+# DBSCAN
+
+```{r}
+dbscan::kNNdistplot(x = select(data.dim.reduc, -NAME), k = 20)
+abline(h = 3, col = "red")
+```
+
+
+```{r}
+db.clust <- dbscan::dbscan(x = dplyr::select(data.dim.reduc,-NAME), eps = 3, minPts = 20)
+factoextra::fviz_cluster(db.clust, data = dplyr::select(data.dim.reduc,-NAME))
+```
+
+```{R}
+clean.data[c(61,58),]
+```
+
+
+
+# GMM
+
+```{r}
+
+gmm.clust <- Mclust(data = dplyr::select(data.dim.reduc,-NAME), G=1:9)
+
+fviz_cluster(gmm.clust, data.dim.reduc)
+```
+
+**RTNSE, 3D PLOT, AND BAR PLOTS FOR CLARA**
+
+```{r}
+  clean.data[,-c(2)] %>%
+  mutate(cluster = gmm.clust$classification) -> clustered.data5
+```
+
+**labeled dimension reduced for PAM and CLARA**
+```{r}
+gmm.dim.reduc <- cbind(data.dim.reduc, cluster = gmm.clust$classification)
+```
+
+
+```{r, warning = 'hide'}
+set.seed(10)
+rtnse.function(8,1500, data = gmm.dim.reduc)
+```
+
+```{r}
+with(gmm.dim.reduc, plot_ly(x=PC1, y=PC2, z=PC3, type="scatter3d", mode="markers", color=as.factor(cluster)))
+```
+
+```{r}
+bar.comparison(clustered.data5, stat = "median")
+```
